@@ -148,13 +148,13 @@ def main():
     burst_offset_delay_list = defaultdict(list)
 
     if client_config.conn_config.port == 123:
-        file = '/Users/vasusharma/Downloads/ntp_observations/original_ntp_server.csv'
+        file = '/Users/vasusharma/Downloads/ntp_observations/original_ntp_server_4mins.csv'
         fp = open(file, 'w+')
     elif client_config.conn_config.host == '127.0.0.1':
-        file = '/Users/vasusharma/Downloads/ntp_observations/local_ntp_server.csv'
+        file = '/Users/vasusharma/Downloads/ntp_observations/local_ntp_server_4mins.csv'
         fp = open(file, 'w+')
     else:
-        file = '/Users/vasusharma/Downloads/ntp_observations/cloud_ntp_server.csv'
+        file = '/Users/vasusharma/Downloads/ntp_observations/cloud_ntp_server_4mins.csv'
         fp = open(file, 'w+')
 
     dw = csv.DictWriter(fp, delimiter=',', fieldnames=["burst_counter", "message_pair", "T1", "T2", "T3", "T4",
@@ -169,6 +169,8 @@ def main():
         oi_di_list = []
         min_delay = float('inf')
         offset = None
+
+        end_counter_time = time.time() + 60*4
         while message_pair < burst_size:
             packet = NTPPacket()
             packet.org_timestamp = org_timestamp[message_pair]
@@ -215,7 +217,9 @@ def main():
             message_pair += 1
         dw.writerow({"delay": min_delay, "offset": offset})
         burst_offset_delay_list[counter] = oi_di_list
-        time.sleep(client_config.NTP_client_config.burst_time_interval)
+
+        while time.time() < end_counter_time:
+            continue
     print(burst_offset_delay_list)
     plot_measurements(burst_offset_delay_list)
 
