@@ -4,15 +4,12 @@ from collections import defaultdict
 import client_config
 import datetime
 import time
+import csv
 
 NTP_DELTA = (datetime.date(*time.gmtime(0)[0:3]) - datetime.date(1900, 1, 1)).days * 24 * 60 * 60
 
 
-def _to_time(integ, frac, n=32):
-    return integ + float(frac) / 2 ** n
-
-
-def system_to_ntp_time(timestamp):
+def convert_to_ntp_time(timestamp):
     return timestamp + NTP_DELTA
 
 
@@ -29,10 +26,15 @@ def is_duplicate(obj, org_timestamp, rcv_timestamp, xmt_timestamp):
     return False
 
 
-class NTPPacket:
-    _PACKET_FORMAT = "!B B b b 3I 4d"
+def save_observations_to_file(dw, burst_counter, message_pair, t1, t2, t3, t4, oi, di):
+    dw.writerow({"burst_counter": burst_counter, "message_pair": message_pair,
+                 "T1": t1, "T2": t2, "T3": t3, "T4": t4, "offset": oi, "delay": di})
 
-    def __init__(self, mode=3, xmt_timestamp=0):
+
+class NTPPacket:
+    _PACKET_FORMAT = "!B B b b 11I"
+
+    def __init__(self, mode=3):
         self.li = 0
 
         self.version = 4
@@ -57,23 +59,26 @@ class NTPPacket:
 
         self.rcv_timestamp = 0
 
-        self.xmt_timestamp = xmt_timestamp
-
+        self.xmt_timestamp = 0
 
     def convert_to_bytes(self):
 
         byte_string = struct.pack(NTPPacket._PACKET_FORMAT,
-                             (self.li << 6 | self.version << 3 | self.mode),
-                             self.stratum,
-                             self.poll,
-                             self.precision,
-                             self.root_delay,
-                             self.root_dispersion,
-                             self.reference_id,
-                             self.reference_timestamp,
-                             self.org_timestamp,
-                             self.rcv_timestamp,
-                             self.xmt_timestamp)
+                                  (self.li << 6 | self.version << 3 | self.mode),
+                                  self.stratum,
+                                  self.poll,
+                                  self.precision,
+                                  self.root_delay,
+                                  self.root_dispersion,
+                                  self.reference_id,
+                                  int(self.reference_timestamp),
+                                  int((self.reference_timestamp - int(self.reference_timestamp)) * pow(2, 32)),
+                                  int(self.org_timestamp),
+                                  int((self.org_timestamp - int(self.org_timestamp)) * pow(2, 32)),
+                                  int(self.rcv_timestamp),
+                                  int((self.rcv_timestamp - int(self.rcv_timestamp)) * pow(2, 32)),
+                                  int(self.xmt_timestamp),
+                                  int((self.xmt_timestamp - int(self.xmt_timestamp)) * pow(2, 32)))
         return byte_string
 
     def convert_to_obj(self, data):
@@ -92,15 +97,16 @@ class NTPPacket:
         self.root_delay = unpacked[4]
         self.root_dispersion = unpacked[5]
         self.reference_id = unpacked[6]
-        self.reference_timestamp = unpacked[7]
-        self.org_timestamp = unpacked[8]
-        self.rcv_timestamp = unpacked[9]
-        self.xmt_timestamp = unpacked[10]
+        self.reference_timestamp = unpacked[7] + float(unpacked[8]) / pow(2, 32)
+        self.org_timestamp = unpacked[9] + float(unpacked[10]) / pow(2, 32)
+        self.rcv_timestamp = unpacked[11] + float(unpacked[12]) / pow(2, 32)
+        self.xmt_timestamp = unpacked[13] + float(unpacked[14]) / pow(2, 32)
+
 
 
 def received_message(sock):
     data, addr = sock.recvfrom(1024)
-    current_rcv_timestamp = system_to_ntp_time(time.time())
+    current_rcv_timestamp = convert_to_ntp_time(time.time())
     packet = NTPPacket()
     packet.convert_to_obj(data)
     return packet, current_rcv_timestamp
@@ -141,6 +147,19 @@ def main():
     burst_counter = client_config.NTP_client_config.burst_counter
     burst_offset_delay_list = defaultdict(list)
 
+    if client_config.conn_config.port == 123:
+        file = '/Users/vasusharma/Downloads/ntp_observations/original_ntp_server.csv'
+        fp = open(file, 'w+')
+    elif client_config.conn_config.host == '127.0.0.1':
+        file = '/Users/vasusharma/Downloads/ntp_observations/local_ntp_server.csv'
+        fp = open(file, 'w+')
+    else:
+        file = '/Users/vasusharma/Downloads/ntp_observations/cloud_ntp_server.csv'
+        fp = open(file, 'w+')
+
+    dw = csv.DictWriter(fp, delimiter=',', fieldnames=["burst_counter", "message_pair", "T1", "T2", "T3", "T4",
+                                                       "offset", "delay"])
+    dw.writeheader()
     for counter in range(burst_counter):
         # loop :- pack
         org_timestamp = [0]
@@ -148,35 +167,43 @@ def main():
         xmt_timestamp = []
         message_pair = 0
         oi_di_list = []
+        min_delay = float('inf')
+        offset = None
         while message_pair < burst_size:
             packet = NTPPacket()
             packet.org_timestamp = org_timestamp[message_pair]
             packet.rcv_timestamp = rcv_timestamp[message_pair]
-            packet.xmt_timestamp = system_to_ntp_time(time.time())
+            packet.xmt_timestamp = convert_to_ntp_time(time.time())
             message = packet.convert_to_bytes()
             sock.sendto(message, (client_config.conn_config.host, client_config.conn_config.port))
-
             duplicate = False
+            print(message_pair, duplicate)
             end_time = time.time() + 1
             while time.time() < end_time:
                 obj, current_rcv_timestamp = received_message(sock)
                 duplicate = is_duplicate(obj, org_timestamp, rcv_timestamp, xmt_timestamp)
                 if not duplicate:
                     break
-
             if duplicate:
                 continue
             di = (current_rcv_timestamp - obj.org_timestamp) - (obj.xmt_timestamp - obj.rcv_timestamp)
             oi = ((obj.rcv_timestamp - obj.org_timestamp) + (obj.xmt_timestamp - current_rcv_timestamp)) / 2
 
+            save_observations_to_file(dw, counter, message_pair,
+                                      datetime.datetime.fromtimestamp(obj.org_timestamp - NTP_DELTA),
+                                      datetime.datetime.fromtimestamp(obj.rcv_timestamp - NTP_DELTA),
+                                      datetime.datetime.fromtimestamp(obj.xmt_timestamp - NTP_DELTA),
+                                      datetime.datetime.fromtimestamp(current_rcv_timestamp - NTP_DELTA),
+                                      oi * 1000, di * 1000)
+
+            if di < min_delay:
+                min_delay = di * 1000
+                offset = oi * 1000
+
             oi_di_list.append((oi * 1000, di * 1000))
 
-            # print("bust message pair :- ", message_pair + 1)
-
-            # print_time(obj.org_timestamp)
-            # print_time(obj.rcv_timestamp)
-            # print_time(obj.xmt_timestamp)
-            print(datetime.datetime.fromtimestamp(obj.xmt_timestamp))
+            print("burst-counter :- ", counter, " message-pair :- ", message_pair, " ",
+                  datetime.datetime.fromtimestamp(obj.xmt_timestamp))
             # print_time(current_rcv_timestamp)
 
             # print("delay is :- ", di * 1000)
@@ -186,11 +213,8 @@ def main():
             rcv_timestamp.append(current_rcv_timestamp)
             xmt_timestamp.append(packet.xmt_timestamp)
             message_pair += 1
+        dw.writerow({"delay": min_delay, "offset": offset})
         burst_offset_delay_list[counter] = oi_di_list
-
-        # print(org_timestamp, len(org_timestamp))
-        # print(rcv_timestamp, len(rcv_timestamp))
-        # print(xmt_timestamp, len(xmt_timestamp))
         time.sleep(client_config.NTP_client_config.burst_time_interval)
     print(burst_offset_delay_list)
     plot_measurements(burst_offset_delay_list)

@@ -1,22 +1,18 @@
 import socket
-import pickle
 import struct
 import datetime
 import time
 
 NTP_DELTA = (datetime.date(*time.gmtime(0)[0:3]) - datetime.date(1900, 1, 1)).days * 24 * 60 * 60
 
-def _to_time(integ, frac, n=32):
-    return integ + float(frac) / 2 ** n
 
-
-def system_to_ntp_time(timestamp):
+def convert_to_ntp_time(timestamp):
     return timestamp + NTP_DELTA
 
 class NTPPacket:
-    _PACKET_FORMAT = "!B B b b 3I 4d"
+    _PACKET_FORMAT = "!B B b b 11I"
 
-    def __init__(self, mode=3, xmt_timestamp=0):
+    def __init__(self, mode=3):
         self.li = 0
 
         self.version = 4
@@ -41,7 +37,7 @@ class NTPPacket:
 
         self.rcv_timestamp = 0
 
-        self.xmt_timestamp = xmt_timestamp
+        self.xmt_timestamp = 0
 
     def convert_to_bytes(self):
 
@@ -53,10 +49,14 @@ class NTPPacket:
                                   self.root_delay,
                                   self.root_dispersion,
                                   self.reference_id,
-                                  self.reference_timestamp,
-                                  self.org_timestamp,
-                                  self.rcv_timestamp,
-                                  self.xmt_timestamp)
+                                  int(self.reference_timestamp),
+                                  int((self.reference_timestamp - int(self.reference_timestamp)) * pow(2, 32)),
+                                  int(self.org_timestamp),
+                                  int((self.org_timestamp - int(self.org_timestamp)) * pow(2, 32)),
+                                  int(self.rcv_timestamp),
+                                  int((self.rcv_timestamp - int(self.rcv_timestamp)) * pow(2, 32)),
+                                  int(self.xmt_timestamp),
+                                  int((self.xmt_timestamp - int(self.xmt_timestamp)) * pow(2, 32)))
         return byte_string
 
     def convert_to_obj(self, data):
@@ -75,10 +75,10 @@ class NTPPacket:
         self.root_delay = unpacked[4]
         self.root_dispersion = unpacked[5]
         self.reference_id = unpacked[6]
-        self.reference_timestamp = unpacked[7]
-        self.org_timestamp = unpacked[8]
-        self.rcv_timestamp = unpacked[9]
-        self.xmt_timestamp = unpacked[10]
+        self.reference_timestamp = unpacked[7] + float(unpacked[8]) / pow(2, 32)
+        self.org_timestamp = unpacked[9] + float(unpacked[10]) / pow(2, 32)
+        self.rcv_timestamp = unpacked[11] + float(unpacked[12]) / pow(2, 32)
+        self.xmt_timestamp = unpacked[13] + float(unpacked[14]) / pow(2, 32)
 
 
 def print_time(t):
@@ -93,7 +93,7 @@ sock.bind((UDP_IP, UDP_PORT))
 
 while True:
     data, addr = sock.recvfrom(1024)
-    rcv_timestamp = system_to_ntp_time(time.time())
+    rcv_timestamp = convert_to_ntp_time(time.time())
 
 
     packet = NTPPacket()
@@ -101,7 +101,7 @@ while True:
     packet.mode = 4
     packet.org_timestamp = packet.xmt_timestamp
     packet.rcv_timestamp = rcv_timestamp
-    packet.xmt_timestamp = system_to_ntp_time(time.time())
+    packet.xmt_timestamp = convert_to_ntp_time(time.time())
 
     print_time(packet.org_timestamp)
     print_time(packet.rcv_timestamp)
