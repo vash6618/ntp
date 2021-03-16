@@ -112,7 +112,7 @@ def received_message(sock):
     return packet, current_rcv_timestamp
 
 
-def plot_measurements(oi_di: dict):
+def plot_measurements(oi_di: dict, plt_file):
     xvalues = []
     yvalues = []
     for key in oi_di:
@@ -137,7 +137,7 @@ def plot_measurements(oi_di: dict):
     plt.plot(xvalues, yvalues, '-D', markevery=markers_on)
     plt.xlabel('burst_messages')
     plt.ylabel('offest_delay')
-    plt.show()
+    plt.savefig(plt_file)
 
 
 def main():
@@ -146,15 +146,19 @@ def main():
     burst_size = client_config.NTP_client_config.burst_size
     burst_counter = client_config.NTP_client_config.burst_counter
     burst_offset_delay_list = defaultdict(list)
+    sock.settimeout(2)
 
     if client_config.conn_config.port == 123:
         file = '/Users/vasusharma/Downloads/ntp_observations/original_ntp_server_4mins.csv'
+        plt_file = '/Users/vasusharma/Downloads/ntp_observations/original_ntp_server_4mins.png'
         fp = open(file, 'w+')
     elif client_config.conn_config.host == '127.0.0.1':
         file = '/Users/vasusharma/Downloads/ntp_observations/local_ntp_server_4mins.csv'
+        plt_file = '/Users/vasusharma/Downloads/ntp_observations/local_ntp_server_4mins.png'
         fp = open(file, 'w+')
     else:
         file = '/Users/vasusharma/Downloads/ntp_observations/cloud_ntp_server_4mins.csv'
+        plt_file = '/Users/vasusharma/Downloads/ntp_observations/cloud_ntp_server_4mins.png'
         fp = open(file, 'w+')
 
     dw = csv.DictWriter(fp, delimiter=',', fieldnames=["burst_counter", "message_pair", "T1", "T2", "T3", "T4",
@@ -181,12 +185,16 @@ def main():
             duplicate = False
             print(message_pair, duplicate)
             end_time = time.time() + 1
-            while time.time() < end_time:
-                obj, current_rcv_timestamp = received_message(sock)
-                duplicate = is_duplicate(obj, org_timestamp, rcv_timestamp, xmt_timestamp)
-                if not duplicate:
-                    break
-            if duplicate:
+            try:
+                while time.time() < end_time:
+                    obj, current_rcv_timestamp = received_message(sock)
+                    duplicate = is_duplicate(obj, org_timestamp, rcv_timestamp, xmt_timestamp)
+                    if not duplicate:
+                        break
+                if duplicate:
+                    continue
+            except socket.timeout:
+                print("socket_timed_out")
                 continue
             di = (current_rcv_timestamp - obj.org_timestamp) - (obj.xmt_timestamp - obj.rcv_timestamp)
             oi = ((obj.rcv_timestamp - obj.org_timestamp) + (obj.xmt_timestamp - current_rcv_timestamp)) / 2
@@ -215,13 +223,14 @@ def main():
             rcv_timestamp.append(current_rcv_timestamp)
             xmt_timestamp.append(packet.xmt_timestamp)
             message_pair += 1
+
         dw.writerow({"delay": min_delay, "offset": offset})
         burst_offset_delay_list[counter] = oi_di_list
 
         while time.time() < end_counter_time:
             continue
     print(burst_offset_delay_list)
-    plot_measurements(burst_offset_delay_list)
+    plot_measurements(burst_offset_delay_list, plt_file)
 
 
 if __name__ == '__main__':
